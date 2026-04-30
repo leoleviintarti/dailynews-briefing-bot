@@ -1,0 +1,36 @@
+name: Daily Briefing (every 6 hours, WIB)
+
+on:
+  schedule:
+    # WIB is UTC+7. Cron is in UTC.
+    # 06:00 WIB = 23:00 UTC (prev day)
+    # 12:00 WIB = 05:00 UTC
+    # 18:00 WIB = 11:00 UTC
+    # 00:00 WIB = 17:00 UTC
+    - cron: "0 23,5,11,17 * * *"
+  workflow_dispatch: # allow manual run from Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run briefing
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python briefing.py
