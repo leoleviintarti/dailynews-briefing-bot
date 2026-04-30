@@ -155,19 +155,29 @@ def call_gemini_lite(api_key: str, items: list[dict]) -> dict:
     for attempt in range(3):
         try:
             resp = requests.post(
-                GEMINI_URL_LITE, params={"key": api_key}, json=body, timeout=60
+                GEMINI_URL_LITE,
+                headers={"x-goog-api-key": api_key},  # header auth, never URL
+                json=body,
+                timeout=60,
             )
-            if resp.status_code == 429:
-                time.sleep(5 * (attempt + 1))
+            if resp.status_code in (429, 500, 502, 503, 504):
+                wait = 8 * (attempt + 1)
+                LOG.warning(
+                    "Gemini-Lite transient %s; backoff %ds",
+                    resp.status_code, wait,
+                )
+                time.sleep(wait)
                 continue
             resp.raise_for_status()
             text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(text)
         except requests.RequestException as e:
-            LOG.warning("Gemini-Lite attempt %d failed: %s", attempt + 1, e)
+            # Never log the exception's str() form -- it may contain the URL with key
+            LOG.warning("Gemini-Lite attempt %d failed: %s", attempt + 1, type(e).__name__)
             if attempt == 2:
-                raise
-            time.sleep(3)
+                LOG.warning("Giving up after 3 attempts; will try next cron slot.")
+                return {"alerts": []}
+            time.sleep(8 * (attempt + 1))
     return {"alerts": []}
 
 
