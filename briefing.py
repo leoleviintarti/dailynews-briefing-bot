@@ -198,25 +198,35 @@ def call_gemini(api_key: str, articles: list[dict]) -> dict:
     }
 
     LOG.info("Calling Gemini with %d articles...", len(payload_articles))
-    for attempt in range(3):
+    last_err = None
+    for attempt in range(4):
         try:
             resp = requests.post(
                 GEMINI_URL,
-                params={"key": api_key},
+                headers={"x-goog-api-key": api_key},  # header auth, NOT query param
                 json=body,
                 timeout=60,
             )
-            if resp.status_code == 429:
-                LOG.warning("Rate-limited; backoff %ds", 5 * (attempt + 1))
-                time.sleep(5 * (attempt + 1))
+            if resp.status_code in (429, 500, 502, 503, 504):
+                wait = 10 * (attempt + 1)
+                LOG.warning(
+                    "Gemini transient %s; backoff %ds (attempt %d/4)",
+                    resp.status_code, wait, attempt + 1,
+                )
+                last_err = f"HTTP {resp.status_code}"
+                time.sleep(wait)
                 continue
             resp.raise_for_status()
             break
         except requests.RequestException as e:
-            LOG.warning("Gemini call failed (attempt %d): %s", attempt + 1, e)
-            if attempt == 2:
-                raise
-            time.sleep(3)
+            # Sanitize: never include URL (which may contain key) in logs/messages
+            last_err = type(e).__name__
+            LOG.warning("Gemini call failed (attempt %d/4): %s", attempt + 1, type(e).__name__)
+            if attempt == 3:
+                raise RuntimeError(f"Gemini unreachable after 4 attempts: {last_err}") from None
+            time.sleep(10 * (attempt + 1))
+    else:
+        raise RuntimeError(f"Gemini returned transient errors on all 4 attempts: {last_err}")
 
     data = resp.json()
     text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -334,11 +344,13 @@ def main() -> None:
     try:
         brief = call_gemini(gemini_key, items)
     except Exception as e:
-        LOG.exception("Gemini call failed: %s", e)
+        # Sanitize: never let str(e) leak into the message; it may contain the key in the URL
+        safe_msg = type(e).__name__
+        LOG.exception("Gemini call failed (%s)", safe_msg)
         send_telegram(
             bot_token,
             chat_id,
-            md_escape(f"[error] briefing failed: {e}. Will retry next slot."),
+            md_escape(f"[error] briefing failed ({safe_msg}). Will retry next slot."),
         )
         sys.exit(2)
 
